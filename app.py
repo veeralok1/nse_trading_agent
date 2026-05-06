@@ -234,7 +234,7 @@ def _color(action: str) -> str:
 with st.sidebar:
     st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/a/ad/"
              "NSE_Logo.svg/200px-NSE_Logo.svg.png",
-             width=140, width=False)
+             width=140, use_container_width=False)
     st.markdown("## ⚙️ Settings")
 
     selected_symbol = st.text_input(
@@ -293,7 +293,7 @@ tabs = st.tabs([
 with tabs[0]:
     col_btn, col_refresh = st.columns([1, 5])
     with col_btn:
-        run_analysis = st.button("🔍 Analyze", type="primary", width=True)
+        run_analysis = st.button("🔍 Analyze", type="primary", use_container_width=True)
 
     if run_analysis or "analysis_result" not in st.session_state:
         with st.spinner(f"Fetching data for {selected_symbol}…"):
@@ -332,7 +332,7 @@ with tabs[0]:
         # ── Candlestick chart ─────────────────────────
         if not df.empty:
             fig = make_candlestick_chart(df, sym, show_indicators)
-            st.plotly_chart(fig, width=True)
+            st.plotly_chart(fig, use_container_width=True)
 
         # ── Signals + Risk in two columns ─────────────
         left, right = st.columns(2)
@@ -395,7 +395,7 @@ with tabs[0]:
                 {"Indicator": list(ind_items.keys()),
                  "Value": [f"{v:.4f}" if v is not None else "—" for v in ind_items.values()]}
             )
-            st.dataframe(ind_df, width=True, hide_index=True)
+            st.dataframe(ind_df, use_container_width=True, hide_index=True)
 
 
 # ═══════════════════════════════════════════════════════
@@ -414,7 +414,7 @@ with tabs[1]:
             help="Swing uses daily charts (positional). Intraday uses 5-min charts.",
         )
     with ctrl1:
-        rank_btn = st.button("🚀 Run Screener", type="primary", width=True)
+        rank_btn = st.button("🚀 Run Screener", type="primary", use_container_width=True)
     with ctrl2:
         action_filt = st.selectbox("Filter by Signal", ["All", "BUY only", "SELL only"], index=0)
     with ctrl3:
@@ -518,7 +518,7 @@ with tabs[1]:
             st.warning(f"No stocks match the **{action_filt}** filter. Try **All**.")
         else:
             styled = display_df.style.map(_style_signal, subset=["Signal"])
-            st.dataframe(styled, width=True, hide_index=True)
+            st.dataframe(styled, use_container_width=True, hide_index=True)
 
         # Score breakdown — only shown when display_df has data
         if not display_df.empty:
@@ -545,7 +545,7 @@ with tabs[1]:
                 )
                 fig2.update_xaxes(gridcolor=GRID_COLOR)
                 fig2.update_yaxes(gridcolor=GRID_COLOR)
-                st.plotly_chart(fig2, width=True)
+                st.plotly_chart(fig2, use_container_width=True)
 
 
 # ═══════════════════════════════════════════════════════
@@ -688,7 +688,7 @@ with tabs[2]:
                 if df_resp is not None and not df_resp.empty and sym_resp:
                     mini_fig = make_candlestick_chart(df_resp, sym_resp, ["Moving Averages", "VWAP"])
                     mini_fig.update_layout(height=400)
-                    st.plotly_chart(mini_fig, width=True)
+                    st.plotly_chart(mini_fig, use_container_width=True)
 
                 st.session_state.chat_history.append(
                     {"role": "assistant", "content": response_text}
@@ -769,13 +769,13 @@ with tabs[3]:
                     )
                     fig_eq.update_xaxes(gridcolor=GRID_COLOR)
                     fig_eq.update_yaxes(gridcolor=GRID_COLOR)
-                    st.plotly_chart(fig_eq, width=True)
+                    st.plotly_chart(fig_eq, use_container_width=True)
 
                 # ── Trade log ────────────────────────
                 trade_df = report.get("trades")
                 if trade_df is not None and not trade_df.empty:
                     with st.expander("📋 Trade Log"):
-                        st.dataframe(trade_df, width=True, hide_index=True)
+                        st.dataframe(trade_df, use_container_width=True, hide_index=True)
 
 
 # ═══════════════════════════════════════════════════════
@@ -828,7 +828,7 @@ with tabs[4]:
         st.dataframe(
             scr_df[["Symbol", "Signal", "Strategy", "Confidence", "Price"]].style
             .map(_style_scr, subset=["Signal"]),
-            width=True, hide_index=True,
+            use_container_width=True, hide_index=True,
         )
 
         st.markdown("---")
