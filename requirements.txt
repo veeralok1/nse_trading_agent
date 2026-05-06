@@ -9,7 +9,8 @@ numpy>=1.24.0,<2.0.0        # numpy 2.x breaks several packages
 pyarrow>=14.0.0              # parquet cache support
 
 # ── Technical Analysis ─────────────────────────────────
-pandas-ta>=0.3.14b0          # requires Python <3.14 (handled by runtime.txt)
+# All indicators (RSI, MACD, VWAP, BB, ATR, OBV, ADX) are computed with
+# pure NumPy/Pandas in indicator_agent.py — no extra TA library needed.
 
 # ── Visualisation ──────────────────────────────────────
 plotly>=5.18.0
