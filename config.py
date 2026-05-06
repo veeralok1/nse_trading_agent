@@ -1,10 +1,10 @@
 """
 config.py — Central configuration for NSE Trading Agent System
 
-Secret resolution priority (first match wins):
-  1. Streamlit Cloud Secrets  (st.secrets)  — used in production
-  2. .env file on disk        (python-dotenv) — used in local dev
-  3. OS environment variables — fallback
+Secret resolution priority (first match wins, checked on every call):
+  1. Streamlit Cloud Secrets  st.secrets   — production / Streamlit Cloud
+  2. .env file on disk        python-dotenv — local development
+  3. OS environment variables              — CI / Docker fallback
 """
 
 import os
@@ -12,39 +12,39 @@ from dataclasses import dataclass, field
 from typing import List, Dict
 
 # ─────────────────────────────────────────────
-# STEP 1 — Try Streamlit secrets (production)
+# Load .env for local development (no-op on cloud)
 # ─────────────────────────────────────────────
-# When deployed on Streamlit Cloud, secrets added via the dashboard
-# are available as st.secrets.  We push them into os.environ so the
-# rest of config.py works identically in both environments.
-
-try:
-    import streamlit as st
-    if hasattr(st, "secrets") and len(st.secrets) > 0:
-        for _k, _v in st.secrets.items():
-            # Only set if not already present (don't override local env)
-            if _k not in os.environ:
-                os.environ[_k] = str(_v)
-except Exception:
-    pass   # Not running inside Streamlit — skip silently
-
-
-# ─────────────────────────────────────────────
-# STEP 2 — Load .env for local development
-# ─────────────────────────────────────────────
-# Values already set from st.secrets above are NOT overridden
-# because override=False is the default in load_dotenv.
-
 try:
     from dotenv import load_dotenv
     _env_path = os.path.join(os.path.dirname(__file__), ".env")
     load_dotenv(dotenv_path=_env_path, override=False)
 except ImportError:
-    pass   # python-dotenv not installed; rely on os.environ
+    pass
 
 
 def _env(key: str, default: str = "") -> str:
-    """Read a config value — works in both local and Streamlit Cloud."""
+    """
+    Read a config value safely in every environment.
+
+    Checks in order:
+      1. st.secrets  (Streamlit Cloud dashboard secrets)
+      2. os.environ  (.env file already loaded above, or system env)
+      3. default
+
+    Reading st.secrets here — rather than pushing to os.environ at
+    import time — avoids a race where module-level constants are
+    evaluated before Streamlit finishes loading secrets.
+    """
+    # ── Streamlit Cloud secrets ───────────────────────────
+    try:
+        import streamlit as st
+        val = st.secrets.get(key)          # returns None if key absent
+        if val is not None:
+            return str(val)
+    except Exception:
+        pass   # Running outside Streamlit (CLI, tests) — skip
+
+    # ── .env / os environment ─────────────────────────────
     return os.environ.get(key, default)
 
 

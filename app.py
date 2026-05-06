@@ -563,6 +563,36 @@ with tabs[2]:
         else:
             st.warning("🔒 AI OFF\nRule-based only")
 
+    # ── Debug expander (shows secret resolution — remove after confirmed working)
+    with st.expander("🔧 AI Config Debug", expanded=False):
+        from config import ENABLE_LLM_CHAT, LLM_PROVIDER, OPENROUTER_API_KEY, OPENROUTER_MODEL
+        st.code(
+            f"ENABLE_LLM_CHAT  = {ENABLE_LLM_CHAT}\n"
+            f"LLM_PROVIDER     = '{LLM_PROVIDER}'\n"
+            f"OPENROUTER_MODEL = '{OPENROUTER_MODEL}'\n"
+            f"API key present  = {bool(OPENROUTER_API_KEY)}\n"
+            f"API key prefix   = '{OPENROUTER_API_KEY[:12]}...' "
+            f"(len={len(OPENROUTER_API_KEY)})"
+            if OPENROUTER_API_KEY else
+            f"ENABLE_LLM_CHAT  = {ENABLE_LLM_CHAT}\n"
+            f"LLM_PROVIDER     = '{LLM_PROVIDER}'\n"
+            f"API key present  = False  ← this is the problem\n"
+            f"\nMake sure OPENROUTER_API_KEY is set in Streamlit Secrets.",
+            language="text",
+        )
+        if not llm.is_available:
+            st.info(
+                "**To enable AI:**\n"
+                "1. Go to Streamlit Cloud → your app → ⋮ → Settings → Secrets\n"
+                "2. Add:\n"
+                "```toml\n"
+                'OPENROUTER_API_KEY = "sk-or-v1-your-key"\n'
+                'ENABLE_LLM_CHAT = "true"\n'
+                'LLM_PROVIDER = "openrouter"\n'
+                "```\n"
+                "3. Save → app reboots automatically"
+            )
+
     if "chat_history" not in st.session_state:
         welcome = (
             "👋 Hi! I'm your NSE Trading Agent. Ask me anything:\n\n"
