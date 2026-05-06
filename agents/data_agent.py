@@ -17,6 +17,10 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import yfinance as yf
 
+# Suppress yfinance's internal noisy ERROR/WARNING logs for 404s and missing data.
+# Our own DataAgent already handles these gracefully; the yfinance messages add no value.
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+
 # Resolve config relative to project root
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -114,6 +118,17 @@ class DataAgent:
 
         return df if df is not None else pd.DataFrame()
 
+    # Fallback period ladder: if the requested period fails, try shorter ones.
+    # This handles symbols like LTIM.NS and TATAMOTORS.NS that return 404 for 90d
+    # but have valid data for 60d or 30d windows.
+    _PERIOD_FALLBACKS: Dict[str, List[str]] = {
+        "90d":  ["60d", "30d"],
+        "180d": ["90d", "60d", "30d"],
+        "365d": ["180d", "90d", "60d"],
+        "30d":  ["20d"],
+        "1d":   [],     # intraday — no fallback
+    }
+
     def _fetch_with_retry(
         self, symbol: str, interval: str, period: str
     ) -> Optional[pd.DataFrame]:
@@ -124,41 +139,61 @@ class DataAgent:
             logger.info("Skipping delisted symbol: %s", symbol)
             return None
 
-        delay = self.RETRY_DELAY
-        for attempt in range(1, self.MAX_RETRIES + 1):
-            try:
-                ticker = yf.Ticker(symbol)
-                df = ticker.history(interval=interval, period=period, auto_adjust=True)
-                if df.empty:
-                    logger.warning("Empty data for %s (attempt %d) — may be delisted", symbol, attempt)
-                    if attempt == self.MAX_RETRIES:
-                        return None          # give up — don't keep retrying missing symbols
+        # Build the list of periods to attempt: requested period + fallbacks
+        periods_to_try = [period] + self._PERIOD_FALLBACKS.get(period, [])
+
+        for try_period in periods_to_try:
+            delay = self.RETRY_DELAY
+            for attempt in range(1, self.MAX_RETRIES + 1):
+                try:
+                    ticker = yf.Ticker(symbol)
+                    df = ticker.history(interval=interval, period=try_period, auto_adjust=True)
+                    if df.empty:
+                        if attempt == self.MAX_RETRIES:
+                            break       # try next period in fallback ladder
+                        time.sleep(delay + random.uniform(0, 1))
+                        delay *= 2
+                        continue
+                    df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
+                    df.index = pd.to_datetime(df.index)
+                    df.dropna(inplace=True)
+                    if try_period != period:
+                        logger.info(
+                            "Fetched %d rows for %s [%s/%s] (fallback from %s)",
+                            len(df), symbol, interval, try_period, period,
+                        )
+                    else:
+                        logger.info("Fetched %d rows for %s [%s/%s]", len(df), symbol, interval, period)
+                    return df
+
+                except Exception as exc:
+                    exc_str = str(exc)
+                    # 404 / delisted / no price — try shorter period immediately
+                    if (
+                        "delisted" in exc_str.lower()
+                        or "no price data" in exc_str.lower()
+                        or "not found" in exc_str.lower()
+                        or "404" in exc_str
+                        or "YFPricesMissingError" in type(exc).__name__
+                    ):
+                        logger.debug(
+                            "Symbol %s period=%s returned no data — trying shorter period",
+                            symbol, try_period,
+                        )
+                        break   # break inner retry loop → try next period
+                    # Rate limit — wait longer
+                    if "rate" in exc_str.lower() or "429" in exc_str or "Too Many" in exc_str:
+                        wait = delay * 2 + random.uniform(2, 5)
+                        logger.warning("Rate limited on %s — waiting %.1fs", symbol, wait)
+                        time.sleep(wait)
+                        delay *= 2
+                        continue
+                    logger.error("Attempt %d failed for %s: %s", attempt, symbol, exc_str[:120])
                     time.sleep(delay + random.uniform(0, 1))
                     delay *= 2
-                    continue
-                df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
-                df.index = pd.to_datetime(df.index)
-                df.dropna(inplace=True)
-                logger.info("Fetched %d rows for %s [%s/%s]", len(df), symbol, interval, period)
-                return df
+            # Inner loop exhausted without return → try next fallback period
 
-            except Exception as exc:
-                exc_str = str(exc)
-                # Delisted / no data — no point retrying
-                if "delisted" in exc_str.lower() or "no price data" in exc_str.lower() \
-                        or "YFPricesMissingError" in type(exc).__name__:
-                    logger.warning("Symbol %s skipped — %s", symbol, exc_str[:80])
-                    return None
-                # Rate limit — wait longer
-                if "rate" in exc_str.lower() or "429" in exc_str or "Too Many" in exc_str:
-                    wait = delay * 2 + random.uniform(2, 5)
-                    logger.warning("Rate limited on %s — waiting %.1fs", symbol, wait)
-                    time.sleep(wait)
-                    delay *= 2
-                    continue
-                logger.error("Attempt %d failed for %s: %s", attempt, symbol, exc_str[:120])
-                time.sleep(delay + random.uniform(0, 1))
-                delay *= 2
+        logger.warning("All periods exhausted for %s [%s] — skipping", symbol, interval)
         return None
 
     # ── Live quote ────────────────────────────────────────
@@ -275,13 +310,22 @@ class DataAgent:
                                 df = raw[["Open", "High", "Low", "Close", "Volume"]].copy()
                             else:
                                 if s not in raw.columns.get_level_values(0):
-                                    logger.warning("No data returned for %s — skipping", s)
-                                    result[s] = pd.DataFrame()
+                                    # Not in batch result — retry individually with period fallback
+                                    logger.debug("No data in batch for %s — retrying individually", s)
+                                    df = self._fetch_with_retry(s, interval, period) or pd.DataFrame()
+                                    result[s] = df
+                                    if not df.empty and self.use_cache:
+                                        df.to_parquet(_cache_key(s, interval, period))
                                     continue
                                 df = raw[s][["Open", "High", "Low", "Close", "Volume"]].copy()
 
                             df.index = pd.to_datetime(df.index)
                             df.dropna(inplace=True)
+
+                            # If batch returned empty for this symbol, retry individually
+                            if df.empty:
+                                logger.debug("Empty batch result for %s — retrying individually", s)
+                                df = self._fetch_with_retry(s, interval, period) or pd.DataFrame()
 
                             if not df.empty and self.use_cache:
                                 df.to_parquet(_cache_key(s, interval, period))
@@ -290,7 +334,7 @@ class DataAgent:
                         except Exception as parse_exc:
                             exc_str = str(parse_exc)
                             if "delisted" in exc_str.lower() or "no price" in exc_str.lower():
-                                logger.warning("Skipping %s (delisted/no data)", s)
+                                logger.debug("Skipping %s (delisted/no data)", s)
                             else:
                                 logger.warning("Parse error for %s: %s", s, exc_str[:80])
                             result[s] = pd.DataFrame()
