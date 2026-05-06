@@ -1,0 +1,28 @@
+# NSE Trading Agent — Python dependencies
+# Install with: pip install -r requirements.txt
+
+# ── Core Data ──────────────────────────────────────────
+yfinance>=0.2.36
+pandas>=2.0.0
+numpy>=1.24.0
+pyarrow>=14.0.0          # parquet cache support
+
+# ── Technical Analysis ─────────────────────────────────
+pandas-ta>=0.3.14b0      # TA-Lib alternative, pure Python
+
+# ── Visualisation ──────────────────────────────────────
+plotly>=5.18.0
+streamlit>=1.32.0
+streamlit-extras>=0.4.0  # optional nice widgets
+
+# ── Utilities ──────────────────────────────────────────
+requests>=2.31.0
+python-dateutil>=2.8.0
+python-dotenv>=1.0.0        # loads .env file into os.environ
+
+# ── LLM via OpenRouter (needed if ENABLE_LLM_CHAT=true) ───
+openai>=1.14.0              # used for OpenRouter AND direct OpenAI access
+# anthropic>=0.25.0         # only needed for direct Anthropic — uncomment if using
+
+# ── Alerts (optional) ──────────────────────────────────
+# python-telegram-bot>=20.0 # Telegram alerts — uncomment to enable

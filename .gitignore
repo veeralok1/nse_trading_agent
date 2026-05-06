@@ -1,0 +1,41 @@
+# ══════════════════════════════════════════
+#  NSE Trading Agent — .gitignore
+# ══════════════════════════════════════════
+
+# ── SECRET FILES — NEVER COMMIT ──────────
+.env
+
+# ── Python ───────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# ── Virtual environments ──────────────────
+venv/
+.venv/
+env/
+.env_backup
+
+# ── Cache (auto-generated) ───────────────
+.cache/
+*.parquet
+
+# ── Streamlit ────────────────────────────
+.streamlit/secrets.toml
+
+# ── IDE / OS ─────────────────────────────
+.idea/
+.vscode/
+*.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Logs ─────────────────────────────────
+*.log
+logs/
