@@ -1,6 +1,10 @@
 """
 config.py — Central configuration for NSE Trading Agent System
-All secrets and environment-specific values are loaded from the .env file.
+
+Secret resolution priority (first match wins):
+  1. Streamlit Cloud Secrets  (st.secrets)  — used in production
+  2. .env file on disk        (python-dotenv) — used in local dev
+  3. OS environment variables — fallback
 """
 
 import os
@@ -8,22 +12,39 @@ from dataclasses import dataclass, field
 from typing import List, Dict
 
 # ─────────────────────────────────────────────
-# LOAD .env FILE
+# STEP 1 — Try Streamlit secrets (production)
 # ─────────────────────────────────────────────
-# Install:  pip install python-dotenv
-# The .env file sits in the same folder as this config.py.
-# Values in .env override system environment variables.
+# When deployed on Streamlit Cloud, secrets added via the dashboard
+# are available as st.secrets.  We push them into os.environ so the
+# rest of config.py works identically in both environments.
+
+try:
+    import streamlit as st
+    if hasattr(st, "secrets") and len(st.secrets) > 0:
+        for _k, _v in st.secrets.items():
+            # Only set if not already present (don't override local env)
+            if _k not in os.environ:
+                os.environ[_k] = str(_v)
+except Exception:
+    pass   # Not running inside Streamlit — skip silently
+
+
+# ─────────────────────────────────────────────
+# STEP 2 — Load .env for local development
+# ─────────────────────────────────────────────
+# Values already set from st.secrets above are NOT overridden
+# because override=False is the default in load_dotenv.
 
 try:
     from dotenv import load_dotenv
     _env_path = os.path.join(os.path.dirname(__file__), ".env")
     load_dotenv(dotenv_path=_env_path, override=False)
 except ImportError:
-    pass   # python-dotenv not installed; fall back to system env vars
+    pass   # python-dotenv not installed; rely on os.environ
 
 
 def _env(key: str, default: str = "") -> str:
-    """Read a variable from the environment (loaded from .env)."""
+    """Read a config value — works in both local and Streamlit Cloud."""
     return os.environ.get(key, default)
 
 
@@ -69,20 +90,29 @@ LLM_PROVIDER    = _env("LLM_PROVIDER", "openrouter")  # "openrouter" | "anthropi
 # ─────────────────────────────────────────────
 
 NIFTY_50_SYMBOLS = [
+    # HDFC.NS removed — HDFC Ltd merged into HDFCBANK in Jul 2023 (delisted)
     "ADANIENT.NS", "ADANIPORTS.NS", "APOLLOHOSP.NS", "ASIANPAINT.NS",
     "AXISBANK.NS", "BAJAJ-AUTO.NS", "BAJAJFINSV.NS", "BAJFINANCE.NS",
     "BHARTIARTL.NS", "BPCL.NS", "BRITANNIA.NS", "CIPLA.NS",
     "COALINDIA.NS", "DIVISLAB.NS", "DRREDDY.NS", "EICHERMOT.NS",
-    "GRASIM.NS", "HCLTECH.NS", "HDFC.NS", "HDFCBANK.NS",
-    "HDFCLIFE.NS", "HEROMOTOCO.NS", "HINDALCO.NS", "HINDUNILVR.NS",
-    "ICICIBANK.NS", "INDUSINDBK.NS", "INFY.NS", "ITC.NS",
-    "JSWSTEEL.NS", "KOTAKBANK.NS", "LT.NS", "LTIM.NS",
-    "MARUTI.NS", "NESTLEIND.NS", "NTPC.NS", "ONGC.NS",
-    "POWERGRID.NS", "RELIANCE.NS", "SBILIFE.NS", "SBIN.NS",
-    "SUNPHARMA.NS", "TATAMOTORS.NS", "TATASTEEL.NS", "TCS.NS",
-    "TECHM.NS", "TITAN.NS", "ULTRACEMCO.NS", "UPL.NS",
-    "WIPRO.NS", "M&M.NS",
+    "GRASIM.NS", "HCLTECH.NS", "HDFCBANK.NS", "HDFCLIFE.NS",
+    "HEROMOTOCO.NS", "HINDALCO.NS", "HINDUNILVR.NS", "ICICIBANK.NS",
+    "INDUSINDBK.NS", "INFY.NS", "ITC.NS", "JSWSTEEL.NS",
+    "KOTAKBANK.NS", "LT.NS", "LTIM.NS", "MARUTI.NS",
+    "NESTLEIND.NS", "NTPC.NS", "ONGC.NS", "POWERGRID.NS",
+    "RELIANCE.NS", "SBILIFE.NS", "SBIN.NS", "SUNPHARMA.NS",
+    "TATAMOTORS.NS", "TATASTEEL.NS", "TCS.NS", "TECHM.NS",
+    "TITAN.NS", "ULTRACEMCO.NS", "UPL.NS", "WIPRO.NS",
+    "M&M.NS", "SHRIRAMFIN.NS",   # SHRIRAMFIN replaced HDFC.NS in Nifty50
 ]
+
+# Symbols known to be delisted, suspended, or renamed on Yahoo Finance.
+# bulk_fetch will skip these automatically — update as needed.
+DELISTED_SYMBOLS: set = {
+    "HDFC.NS",       # merged into HDFCBANK Jul 2023
+    "INFRATEL.NS",   # merged into BHARTIARTL
+    "ZEEL.NS",       # suspended at various points
+}
 
 NIFTY_BANK_SYMBOLS = [
     "AUBANK.NS", "AXISBANK.NS", "BANDHANBNK.NS", "FEDERALBNK.NS",
@@ -111,7 +141,7 @@ SYMBOL_ALIASES: Dict[str, str] = {
     "TCS": "TCS.NS",
     "INFY": "INFY.NS",
     "INFOSYS": "INFY.NS",
-    "HDFC": "HDFCBANK.NS",
+    "HDFC": "HDFCBANK.NS",        # HDFC Ltd merged → route to HDFCBANK
     "HDFCBANK": "HDFCBANK.NS",
     "ICICIBANK": "ICICIBANK.NS",
     "SBI": "SBIN.NS",
