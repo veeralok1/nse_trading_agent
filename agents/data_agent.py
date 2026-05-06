@@ -78,8 +78,19 @@ class DataAgent:
     BATCH_SIZE   = 8      # symbols per yf.download() call
     BATCH_DELAY  = 2.0    # seconds between batches (rate-limit guard)
 
+    # Symbols where Yahoo Finance returns 404 for longer periods.
+    # We cap the period for these symbols in bulk_fetch to avoid noisy errors.
+    # Format: { "SYMBOL.NS": "max_safe_period" }
+    _PERIOD_CAP: Dict[str, str] = {
+        "TATAMOTORS.NS": "60d",
+        "LTIM.NS":       "60d",
+    }
+
     def __init__(self, use_cache: bool = True):
         self.use_cache = use_cache
+        # Re-apply yfinance log suppression here in case Streamlit reconfigures
+        # the root logger after module import, which would un-suppress it.
+        logging.getLogger("yfinance").setLevel(logging.CRITICAL)
         logger.info("DataAgent initialised (cache=%s)", use_cache)
 
     # ── Single stock ──────────────────────────────────────
@@ -289,7 +300,28 @@ class DataAgent:
 
         # Split into batches
         for batch_start in range(0, len(to_download), self.BATCH_SIZE):
-            batch = to_download[batch_start: batch_start + self.BATCH_SIZE]
+            full_batch = to_download[batch_start: batch_start + self.BATCH_SIZE]
+
+            # Separate symbols that need a capped period from the rest.
+            # Sending them together in the same batch with different periods is not
+            # possible with yf.download, so we pull them out and fetch individually.
+            capped = [s for s in full_batch if s in self._PERIOD_CAP]
+            batch  = [s for s in full_batch if s not in self._PERIOD_CAP]
+
+            # Fetch capped symbols individually right now (before the batch call)
+            for s in capped:
+                safe_period = self._PERIOD_CAP[s]
+                df = self._fetch_with_retry(s, interval, safe_period) or pd.DataFrame()
+                result[s] = df
+                if not df.empty and self.use_cache:
+                    df.to_parquet(_cache_key(s, interval, period))
+
+            if not batch:
+                # All symbols in this chunk were capped — skip the batch download
+                if batch_start + self.BATCH_SIZE < len(to_download):
+                    time.sleep(self.BATCH_DELAY + random.uniform(0, 1))
+                continue
+
             batch_ok = False
 
             for attempt in range(1, self.MAX_RETRIES + 1):

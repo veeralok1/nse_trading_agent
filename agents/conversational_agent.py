@@ -70,27 +70,43 @@ def detect_intent(query: str) -> str:
 
 
 def extract_symbol(query: str) -> Optional[str]:
-    """Extract the first NSE symbol mentioned in the query."""
+    """
+    Extract the first NSE symbol mentioned in the query.
+
+    Strategy:
+      1. Check SYMBOL_ALIASES (longest match first to handle "TATA MOTORS" etc.)
+      2. Scan all uppercase tokens (2-15 chars) and return the first that is NOT
+         a common English stop-word or intent keyword.
+    """
     q = query.upper()
 
     # Check aliases (multi-word first)
     for alias in sorted(SYMBOL_ALIASES.keys(), key=len, reverse=True):
-        if alias in q:
+        if re.search(rf'\b{re.escape(alias)}\b', q):
             return SYMBOL_ALIASES[alias]
 
-    # Check ".NS" suffix directly
-    match = re.search(r'\b([A-Z&]{2,15}(?:\.NS)?)\b', q)
-    if match:
+    # Words that look like tickers but are definitely not stock symbols
+    SKIP = {
+        "THE", "AND", "FOR", "BUY", "SELL", "ARE", "TOP", "GOOD", "BEST",
+        "WHAT", "GIVE", "TODAY", "INTRADAY", "TREND", "ANALYZE", "MARKET",
+        "FIND", "SWING", "LONG", "TERM", "INVEST", "MONTH", "YEAR",
+        "WEEKS", "STOCK", "STOCKS", "PICK", "PICKS", "SUGGEST", "TELL",
+        "ANALYSIS", "ANALYSE", "CHECK", "LOOK", "ABOUT", "WITH", "THIS",
+        "SHOULD", "VISION", "PERSPECTIVE", "TARGET", "RANGE", "PRICE",
+        "QUARTER", "QUARTERLY", "WEEK", "DAY", "DAYS", "MONTHS", "YEARS",
+        "PLEASE", "KNOW", "INVEST", "INVESTMENT", "PORTFOLIO", "RETURNS",
+        "YES", "NOT", "LET", "CAN", "WILL", "WANT", "GIVE", "SHOW",
+        "ME", "MY", "WE", "IS", "IT", "IN", "AT", "ON", "OF", "TO",
+        "NIFTY", "SENSEX", "NSE", "BSE", "SEBI",
+    }
+
+    # Scan all word-boundary tokens — take the first plausible ticker
+    for match in re.finditer(r'\b([A-Z][A-Z0-9&\-]{1,14}(?:\.NS)?)\b', q):
         token = match.group(1)
-        # Ignore common English words
-        skip = {
-            "THE", "AND", "FOR", "BUY", "SELL", "ARE", "TOP", "GOOD", "BEST",
-            "WHAT", "GIVE", "TODAY", "INTRADAY", "TREND", "ANALYZE", "MARKET",
-            "FIND", "SWING", "LONG", "TERM", "INVEST", "MONTH", "YEAR",
-            "WEEKS", "STOCK", "STOCKS", "PICK", "PICKS", "SUGGEST",
-        }
-        if token.replace(".NS", "") not in skip:
+        base  = token.replace(".NS", "").replace("-", "")
+        if base not in SKIP and len(base) >= 2:
             return normalise_symbol(token)
+
     return None
 
 
@@ -181,12 +197,24 @@ class ConversationalAgent:
         if intent == "HELP":
             return self._help_response()
 
+        # ── Key routing fix ───────────────────────────────────────────────────
+        # If a specific stock symbol is present, the user wants analysis of THAT
+        # stock — even if "invest", "3 months", "target" etc. appear in the query.
+        # SWING_BEST / INTRADAY_BEST screeners only run when NO symbol is given.
+        # ─────────────────────────────────────────────────────────────────────
         if intent == "SWING_BEST":
+            if symbol is not None:
+                # User said "analyse HAL for 3 months" — give per-stock swing analysis
+                horizon = extract_horizon(user_input)
+                return self._swing_stock_analysis(symbol, horizon)
             n       = extract_number(user_input)
             horizon = extract_horizon(user_input)
             return self._best_swing(n, horizon)
 
         if intent == "INTRADAY_BEST":
+            if symbol is not None:
+                # User said "should I buy HAL intraday?" — single-stock analysis
+                return self._signal_analysis(symbol)
             n = extract_number(user_input)
             return self._best_intraday(n)
 
@@ -353,6 +381,181 @@ class ConversationalAgent:
             },
             "intent": "SIGNAL",
             "symbol": symbol,
+        }
+
+    def _swing_stock_analysis(self, symbol: str, period: str = "90d") -> Dict:
+        """
+        Full swing / investment analysis for a SINGLE stock over the given horizon.
+        Uses daily bars, longer-period MAs, and gives price targets.
+        """
+        name    = symbol.replace(".NS", "")
+        horizon = _horizon_label(period)
+
+        # ── Fetch daily data for swing horizon ───────────────────────────────
+        df       = self.da.fetch(symbol, interval="1d", period=period)
+        if df is None or df.empty:
+            # Fallback to 5m data if daily unavailable
+            df = self.da.fetch(symbol, "5m", "5d")
+        enriched = self.ia.compute_all(df)
+
+        # ── Also grab a quick live quote ─────────────────────────────────────
+        quote    = self.da.get_live_quote(symbol)
+        signals  = self.sa.generate(enriched, symbol)
+        ind_sum  = self.ia.get_summary(enriched)
+        trend    = self.ia.trend_direction(enriched)
+
+        price    = quote.get("last_price") or (float(df["Close"].iloc[-1]) if not df.empty else 0)
+        change_p = quote.get("change_pct", 0)
+
+        # ── Risk / target levels ─────────────────────────────────────────────
+        risk_profile = None
+        if signals:
+            risk_profile = self.ra.evaluate(signals[0], enriched)
+
+        # ── Derive swing-specific price levels ───────────────────────────────
+        # Use ATR for stop, and Fibonacci-style targets
+        atr_val   = ind_sum.get("atr") or 0
+        ma50      = ind_sum.get("ma_50") or 0
+        ma200     = ind_sum.get("ma_200") or 0
+        rsi_val   = ind_sum.get("rsi") or 0
+        bb_upper  = ind_sum.get("bb_upper") or 0
+        bb_lower  = ind_sum.get("bb_lower") or 0
+
+        # Swing stop = 1.5× ATR below price (or 3% — whichever is wider)
+        atr_stop_gap  = max(atr_val * 1.5, price * 0.03) if atr_val else price * 0.03
+        swing_stop    = round(price - atr_stop_gap, 2)
+        # Conservative / mid / aggressive targets (2R / 3R / 5R)
+        risk_pts      = price - swing_stop
+        tgt1          = round(price + risk_pts * 2, 2)
+        tgt2          = round(price + risk_pts * 3, 2)
+        tgt3          = round(price + risk_pts * 5, 2)
+        potential_pct = round((tgt2 - price) / price * 100, 1) if price else 0
+
+        # ── Trend description ────────────────────────────────────────────────
+        ma_comment = ""
+        if ma50 and ma200:
+            if price > ma200 > 0:
+                ma_comment = "Price is **above MA200** — long-term uptrend intact ✅"
+            elif price < ma200:
+                ma_comment = "Price is **below MA200** — long-term downtrend ⚠️"
+        if ma50 and price > ma50:
+            ma_comment += "  |  Above MA50 (medium trend bullish)"
+        elif ma50:
+            ma_comment += "  |  Below MA50 (medium trend weak)"
+
+        # ── RSI comment ──────────────────────────────────────────────────────
+        rsi_comment = ""
+        if rsi_val > 70:
+            rsi_comment = f"RSI `{rsi_val:.1f}` — **Overbought**, wait for a pullback before entering 🔴"
+        elif rsi_val < 30:
+            rsi_comment = f"RSI `{rsi_val:.1f}` — **Oversold**, potential reversal zone 🟢"
+        elif 40 <= rsi_val <= 60:
+            rsi_comment = f"RSI `{rsi_val:.1f}` — **Neutral zone**, healthy for accumulation"
+        else:
+            rsi_comment = f"RSI `{rsi_val:.1f}`"
+
+        # ── Investment verdict ───────────────────────────────────────────────
+        action, conf = self.sa.aggregate_action(enriched, symbol)
+        if action == "BUY" and trend in ("BULLISH",) and (rsi_val < 65 or rsi_val == 0):
+            verdict = f"✅ **YES — Consider investing in {name}** for the {horizon} horizon."
+            verdict_detail = (
+                f"The stock shows a {_trend_emoji(trend)} trend with a {_emoji_action(action)} signal "
+                f"at {conf:.0%} confidence. Risk-adjusted targets are attractive."
+            )
+        elif action == "SELL" or trend == "BEARISH":
+            verdict = f"⛔ **AVOID or WAIT** — {name} is showing weakness right now."
+            verdict_detail = (
+                f"Current signal is {_emoji_action(action)} with trend {_trend_emoji(trend)}. "
+                f"Wait for the trend to stabilise before entering for {horizon}."
+            )
+        else:
+            verdict = f"🟡 **NEUTRAL / MONITOR** — {name} has mixed signals for {horizon}."
+            verdict_detail = (
+                f"Signal is {_emoji_action(action)} ({conf:.0%}), trend {_trend_emoji(trend)}. "
+                f"Watch for breakout above MA50 before committing capital."
+            )
+
+        # ── Build response text ──────────────────────────────────────────────
+        lines = [
+            f"## 📊 {name} — {horizon} Investment Analysis",
+            f"**Current Price:** ₹{price:,.2f}  ({change_p:+.2f}%)",
+            f"**Horizon:** {horizon}  |  **Trend:** {_trend_emoji(trend)}",
+            "",
+            f"### 🏦 Investment Verdict",
+            verdict,
+            verdict_detail,
+            "",
+            "### 📐 Key Indicators (Daily Chart)",
+            ma_comment,
+            rsi_comment,
+        ]
+
+        if bb_upper and bb_lower:
+            lines.append(
+                f"Bollinger Bands: ₹`{bb_lower:,.2f}` — ₹`{bb_upper:,.2f}` "
+                f"(Price {'near upper band ⚠️' if price > bb_upper * 0.97 else 'within bands ✅' if price > bb_lower * 1.03 else 'near lower band 🟢'})"
+            )
+
+        lines += [
+            "",
+            "### 🎯 Price Targets",
+            f"| Level | Price | Move |",
+            f"|---|---|---|",
+            f"| 🛑 Stop Loss (swing) | ₹{swing_stop:,.2f} | {(swing_stop-price)/price*100:+.1f}% |",
+            f"| 🎯 Target 1 (Conservative) | ₹{tgt1:,.2f} | {(tgt1-price)/price*100:+.1f}% |",
+            f"| 🎯 Target 2 (Base case) | ₹{tgt2:,.2f} | {(tgt2-price)/price*100:+.1f}% |",
+            f"| 🚀 Target 3 (Aggressive) | ₹{tgt3:,.2f} | {(tgt3-price)/price*100:+.1f}% |",
+            "",
+        ]
+
+        if risk_profile:
+            lines += [
+                "### 🛡️ Risk Profile",
+                f"- **Position Size:** {risk_profile.position_size} shares "
+                  f"(risk ₹{risk_profile.risk_amount_inr:,.0f})",
+                f"- **R:R Ratio:** 1:{risk_profile.risk_reward:.1f}",
+                f"- {risk_profile.notes}",
+                "",
+            ]
+
+        if signals:
+            lines += ["### 🔔 Active Signals"]
+            for s in signals[:2]:
+                lines.append(
+                    f"- **{_emoji_action(s.action)}** via `{s.strategy}` "
+                    f"({s.confidence:.0%}): {'; '.join(s.reasons)}"
+                )
+            lines.append("")
+
+        lines.append(
+            f"> ⚠️ _This is a technical analysis for educational purposes only. "
+            f"For {horizon} investment, also review fundamentals (P/E, earnings, sector trends) "
+            f"and consult a SEBI-registered advisor before investing._"
+        )
+
+        return {
+            "text": "\n".join(lines),
+            "data": {
+                "quote":        quote,
+                "indicators":   ind_sum,
+                "trend":        trend,
+                "action":       action,
+                "confidence":   conf,
+                "signals":      [{"action": s.action, "strategy": s.strategy,
+                                  "confidence": s.confidence, "reasons": s.reasons}
+                                 for s in signals],
+                "risk_profile": self.ra.to_dict(risk_profile) if risk_profile else None,
+                "targets": {
+                    "stop_loss": swing_stop,
+                    "target_1":  tgt1,
+                    "target_2":  tgt2,
+                    "target_3":  tgt3,
+                },
+                "df": enriched,
+            },
+            "intent":  "SWING_STOCK",
+            "symbol":  symbol,
+            "horizon": period,
         }
 
     def _best_intraday(self, top_n: int = 5) -> Dict:
